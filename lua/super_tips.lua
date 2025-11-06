@@ -54,8 +54,8 @@ local META_KEY = {
 
 ---@param tip string
 function tips.is_disabled(tip)
-    local type = tip:match("^([^:]+):")
-        or tip:match("^([^：]+)：")
+    local type = tip:match("^(..-):")
+        or tip:match("^(..-)：")
 
     if not type then return false end
     return tips.disabled_types[type] == true
@@ -95,7 +95,7 @@ function tips.init(config)
 
     local dist = rime_api.get_distribution_code_name() or ""
     local user_lua_dir = rime_api.get_user_data_dir() .. "/lua"
-    if dist ~= "hamster" and dist ~= "Weasel" then
+    if dist ~= "hamster" and dist ~= "hamster3" and dist ~= "Weasel" then
         tips.ensure_dir_exist(user_lua_dir)
         tips.ensure_dir_exist(user_lua_dir .. "/tips")
     end

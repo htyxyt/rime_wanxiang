@@ -1,5 +1,5 @@
 --@amzxyz https://github.com/amzxyz/rime_wanxiang
--- 省略说明注释 …
+
 
 local wanxiang = require('wanxiang')
 
@@ -20,20 +20,10 @@ local function remove_pinyin_tone(s)
     return table.concat(result)
 end
 
-local patterns = {
-    fuzhu = "[^;];(.*)$",
-    tone = "([^;]*);",
-    moqi = "[^;]*;([^;]*);",
-    flypy = "[^;]*;[^;]*;([^;]*);",
-    zrm = "[^;]*;[^;]*;[^;]*;([^;]*);",
-    tiger = "[^;]*;[^;]*;[^;]*;[^;]*;([^;]*);",
-    wubi = "[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;([^;]*);",
-    hanxin = "[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;([^;]*);"
-}
--- #########################
+-- ----------------------
 -- # 辅助码拆分提示模块
 -- PRO 专用
--- #########################
+-- ----------------------
 local CF = {}
 function CF.init(env)
     if wanxiang.is_pro_scheme(env) then -- pro 版直接初始化
@@ -58,43 +48,24 @@ function CF.get_comment(cand, env)
     if not dict then return "" end
 
     local raw = dict:lookup(cand.text)
-    if raw == "" then return "" end
-    -- 跳过 tone 类型
-    local fuzhu_type = env.settings.fuzhu_type or ""
-    if fuzhu_type == "tone" then
-        return ""
-    end
-    -- 辅助码类型 → 圈字映射
-    local mark_map = {
-        hanxin = "Ⓐ",
-        tiger  = "Ⓒ",
-        flypy  = "Ⓓ",
-        moqi   = "Ⓔ",
-        zrm    = "Ⓕ",
-        wubi   = "Ⓑ"
-    }
-    local fuzhu_type = env.settings.fuzhu_type or ""
-    local mark = mark_map[fuzhu_type]
-    if not mark then return raw end  -- 如果没有匹配的圈字，返回整个 raw
+    if not raw or raw == "" then return "" end
 
-    -- 拆分各字注释段（按空格、或用 %s 拆分多个注释块）
-    local segments = {}
-    for segment in raw:gmatch("[^%s]+") do
-        table.insert(segments, segment)
-    end
-    -- 遍历查找包含指定圈字的片段
-    for _, seg in ipairs(segments) do
-        if seg:find(mark, 1, true) then
-            -- 去除圈字标志，返回剩余内容
-            return seg:gsub(mark, "", 1)
+    local tpl = (env and env.settings and env.settings.chaifen) or ""
+
+    if tpl ~= "" then
+        -- 取 chaifen 左右两边
+        local left, right = tpl:match("^(.-)chaifen(.-)$")
+        if left then
+            return left .. raw .. right
         end
     end
-    return raw  -- 如果没有任何片段含圈字，也返回原始内容
+
+    return raw
 end
 
--- #########################
+-- ----------------------
 -- # 错音错字提示模块
--- #########################
+-- ----------------------
 local CR = {}
 local corrections_cache = nil -- 用于缓存已加载的词典
 function CR.init(env)
@@ -127,56 +98,53 @@ function CR.init(env)
 end
 
 function CR.get_comment(cand)
-    -- 使用候选词的 comment 作为 code，在缓存中查找对应的修正
-    local correction = nil
-    if corrections_cache then
-        correction = corrections_cache[cand.comment]
+    local correction = corrections_cache and corrections_cache[cand.comment] or nil
+    if not (correction and cand.text == correction.text) then
+        return nil
     end
-    if correction and cand.text == correction.text then
-        -- 用新的注释替换默认注释
-        local final_comment = CR.style:gsub("{comment}", correction.comment)
-        return final_comment
+    -- 只认占位符 `comment`，按“刀法”切分
+    local tpl = CR.style or "comment"
+    local left, right = tpl:match("^(.-)comment(.-)$")
+
+    if left then
+        return left .. correction.comment .. right
+    else
+        return correction.comment
     end
-    return nil
 end
 
--- ################################
+-- ----------------------
 -- 部件组字返回的注释
--- ################################
+-- ----------------------
 ---@return string
 local function get_az_comment(_, env, initial_comment)
-    if not initial_comment or initial_comment == "" then return "" end
+    if not initial_comment or initial_comment == "" then return "〔无〕" end
     local final_comment = nil
     local auto_delimiter = env.settings.auto_delimiter or " "
-    -- 拆分各字注释段
+    -- 拆分初始评论为多个段落
     local segments = {}
     for segment in initial_comment:gmatch("[^%s]+") do
         table.insert(segments, segment)
     end
-    local semicolon_count = select(2, segments[1]:gsub(";", "")) -- 使用第一个段判断
+    local semicolon_count = select(2, segments[1]:gsub(";", "")) -- 使用第一个段来判断分号的数量
     local pinyins = {}
     local fuzhu = nil
     for _, segment in ipairs(segments) do
-        local pinyin = segment:match("^[^;]+")
+        local pinyin = segment:match("^[^;~]+")
         local fz = nil
 
-        if semicolon_count == 0 then
-            -- 无分号，只收集拼音
-            fz = nil
-        elseif semicolon_count == 1 then
-            -- 一个分号，取后段
+        if semicolon_count == 1 then
+            -- 一个分号：取后段
             fz = segment:match(";(.+)$")
         else
-            -- 多个分号，使用模式提取
-            local pattern = patterns[env.settings.fuzhu_type]
-            if pattern then
-                fz = segment:match(pattern)
-            end
+            -- 无分号不取辅助码
+            fz = nil
         end
 
         if pinyin then table.insert(pinyins, pinyin) end
         if not fuzhu and fz and fz ~= "" then fuzhu = fz end
     end
+
     -- 拼接结果
     if #pinyins > 0 then
         local pinyin_str = table.concat(pinyins, ",")
@@ -186,11 +154,11 @@ local function get_az_comment(_, env, initial_comment)
             final_comment = string.format("〔音%s〕", pinyin_str)
         end
     end
-    return final_comment or ""
+    return final_comment or "〔无〕"
 end
--- #########################
+-- ----------------------
 -- # 辅助码提示或带调全拼注释模块 (Fuzhu)
--- #########################
+-- ----------------------
 local function get_fz_comment(cand, env, initial_comment)
     local length = utf8.len(cand.text)
     if length > env.settings.candidate_length then
@@ -204,7 +172,7 @@ local function get_fz_comment(cand, env, initial_comment)
 
     -- 根据 option 动态决定是否强制使用 tone
     local use_tone = env.engine.context:get_option("tone_hint")
-    local fuzhu_type = use_tone and "tone" or env.settings.fuzhu_type
+    local fuzhu_type = use_tone and "tone" or "fuzhu"
 
     local first_segment = segments[1] or ""
     local semicolon_count = select(2, first_segment:gsub(";", ""))
@@ -212,19 +180,25 @@ local function get_fz_comment(cand, env, initial_comment)
     -- 没有分号的情况
     if semicolon_count == 0 then
         return initial_comment:gsub(auto_delimiter, " ")
-    else   -- 有分号的情况根据类型选择
-        local pattern = patterns[fuzhu_type]
-        if pattern then
-            for _, segment in ipairs(segments) do
-                local match = segment:match(pattern)
-                if match then
-                    table.insert(fuzhu_comments, match)
+    else
+        -- 有分号：按类型提取
+        for _, segment in ipairs(segments) do
+            if fuzhu_type == "tone" then
+                -- 取第一个分号“前”的内容
+                local before = segment:match("^(.-);")
+                if before and before ~= "" then
+                    table.insert(fuzhu_comments, before)
+                end
+            else -- "fuzhu"
+                -- 取第一个分号“后”的内容（到行尾）
+                local after = segment:match(";(.+)$")
+                if after and after ~= "" then
+                    table.insert(fuzhu_comments, after)
                 end
             end
-        else
-            return ""
         end
     end
+
     -- 最终拼接输出，fuzhu用 `,`，tone用 /连接
     if #fuzhu_comments > 0 then
         if fuzhu_type == "tone" then
@@ -236,10 +210,143 @@ local function get_fz_comment(cand, env, initial_comment)
         return ""
     end
 end
+-- ----------------------
+-- # 自动无词频造词模块
+-- ----------------------
+local AP = {}
+local comment_cache = {}
 
--- #########################
+function AP.init(env)
+    local config = env.engine.schema.config
+    local enable_auto_phrase = config:get_bool("add_user_dict/enable_auto_phrase") or false
+    local enable_user_dict = config:get_bool("add_user_dict/enable_user_dict") or false
+
+        -- 依据配置选择是否开始缓存comment
+    if enable_auto_phrase and enable_user_dict then 
+        env.memory = Memory(env.engine, env.engine.schema, "add_user_dict")
+        env._commit_conn = env.engine.context.commit_notifier:connect(
+            function(ctx)
+                AP.commit_handler(ctx, env)
+            end
+        )
+        env._delete_conn = env.engine.context.delete_notifier:connect(
+            function(ctx)
+                comment_cache = {}
+            end
+        )
+    end
+end
+
+function AP.fini(env)
+    if env._commit_conn then
+        env._commit_conn:disconnect()
+        env._commit_conn = nil
+    end
+
+    if env._delete_conn then
+        env._delete_conn:disconnect()
+        env._delete_conn = nil
+    end
+
+    if env.memory then
+        env.memory:disconnect()
+        env.memory = nil
+    end
+end
+
+function AP.save_comment_cache(cand)
+    local comment = cand.comment
+    local comment_text = cand.text
+
+    if comment_text and comment_text ~= "" and comment and comment ~= "" then
+        comment_cache[comment_text] = comment
+    end
+end
+
+function AP.commit_handler(ctx, env)
+    if not ctx or not ctx.composition then
+        comment_cache = {}
+        return
+    end
+
+    local segments = ctx.composition:toSegmentation():get_segments()
+    local segments_count = #segments
+    local commit_text = ctx:get_commit_text()
+
+    -- 检查是否符合最小造词单元要求
+    if segments_count <= 1 or utf8.len(commit_text) <= 1 then
+        comment_cache = {}
+        return
+    end
+
+    -- 检查是否符合造词内容要求
+    if not AP.is_chinese_only(commit_text) or comment_cache[commit_text] then
+        comment_cache = {}
+        return
+    end
+
+    local preedits_table = {}
+    local config = env.engine.schema.config
+    local delimiter = config:get_string("speller/delimiter") or " '"
+    local escaped_delimiter = utf8.char(utf8.codepoint(delimiter)):gsub("(%W)", "%%%1")
+
+    for i = 1, segments_count do
+        local seg = segments[i]
+        local cand = seg:get_selected_candidate()
+
+        if cand then
+            local cand_text = cand.text
+            local preedit = comment_cache[cand_text]
+
+            if preedit and preedit ~= "" then
+                for part in preedit:gmatch("[^" .. escaped_delimiter .. "]+") do
+                    table.insert(preedits_table, part)
+                end
+            end
+        end
+    end
+
+    local dictEntry = DictEntry()
+
+    dictEntry.text = commit_text
+    dictEntry.weight = 1
+    dictEntry.custom_code = table.concat(preedits_table, " ") .. " "
+
+    env.memory:update_userdict(dictEntry, 1, "")
+
+    log.info(string.format("[auto_phrase] 自动造词：[%s]，编码：[%s]", dictEntry.text, dictEntry.custom_code))
+
+    comment_cache = {}
+end
+
+-- 判断字符是否为汉字
+function AP.is_chinese_only(text)
+    local non_chinese_pattern = "[%w%p]"
+
+    if not text or text == "" then
+        return false
+    end
+
+    if text:match(non_chinese_pattern) then
+        return false
+    end
+
+    for _, cp in utf8.codes(text) do
+        -- 常用汉字区 + 扩展 A/B/C/D/E/F/G
+        if
+            not ((cp >= 0x4E00 and cp <= 0x9FFF) or -- CJK Unified Ideographs
+                (cp >= 0x3400 and cp <= 0x4DBF) or -- CJK Ext-A
+                (cp >= 0x20000 and cp <= 0x2EBEF) or -- CJK Ext-B~G（需 5.3+ 支持大码点）
+                false)
+         then
+            return false
+        end
+    end
+    return true
+end
+-- ----------------------
 -- 主函数：根据优先级处理候选词的注释和preedit
--- #########################
+-- ----------------------
 local ZH = {}
 function ZH.init(env)
     local config = env.engine.schema.config
@@ -252,14 +359,16 @@ function ZH.init(env)
         manual_delimiter = manual_delimiter,
         corrector_enabled = config:get_bool("super_comment/corrector") or true,
         corrector_type = config:get_string("super_comment/corrector_type") or "{comment}",
+        chaifen = config:get_string("super_comment/chaifen") or "〔chaifen〕",
         candidate_length = tonumber(config:get_string("super_comment/candidate_length")) or 1,
-        fuzhu_type = config:get_string("super_comment/fuzhu_type") or ""
     }
     CR.init(env)
+    AP.init(env)
 end
 function ZH.fini(env)
     -- 清理
     CF.fini(env)
+    AP.fini(env)
 end
 function ZH.func(input, env)
     local config = env.engine.schema.config
@@ -281,12 +390,21 @@ function ZH.func(input, env)
     local is_tone_display = context:get_option("tone_display")
     local is_full_pinyin = context:get_option("full_pinyin")
     local index = 0
+    -- auto_phrase 相关声明
+    local enable_auto_phrase = config:get_bool("add_user_dict/enable_auto_phrase") or false
+    local enable_user_dict = config:get_bool("add_user_dict/enable_user_dict") or false
+
     for cand in input:iter() do
         local genuine_cand = cand:get_genuine()
         local preedit = genuine_cand.preedit or ""
         local initial_comment = genuine_cand.comment
         local final_comment = initial_comment
         index = index + 1
+
+        -- auto_phrase 相关处理,只保存comment
+        if enable_auto_phrase and enable_user_dict then 
+            AP.save_comment_cache(cand)
+        end
 
         -- preedit相关处理只跳过 preedit，不影响注释
         if is_radical_mode then
